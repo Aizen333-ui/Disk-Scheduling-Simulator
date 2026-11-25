@@ -3,19 +3,15 @@
 Run with:  python gui.py      (requires: pip install matplotlib)
 """
 
-import random
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import ttk
 
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
 import engine
-import experiment
 import inputs
 import plots
-import stats
-import workloads
 from disk_scheduling import DOWN, UP
 
 DEFAULT_QUEUE = "98 183 37 122 14 124 65 67"
@@ -24,6 +20,14 @@ TABLE_COLUMNS = (
     ("avg_resp", "Avg response (ms)", 120), ("avg_wait", "Avg wait (ms)", 100),
     ("max_wait", "Max wait (ms)", 100), ("fairness", "Fairness", 75), ("thru", "Throughput (req/s)", 125),
 )
+METRIC_LABELS = {
+    "avg_response_ms": "Average response time (ms)",
+    "avg_wait_ms": "Average wait time (ms)",
+    "max_wait_ms": "Maximum wait time (ms)",
+    "total_movement": "Total head movement (cylinders)",
+    "fairness": "Fairness index (Jain, response times)",
+    "response_std_ms": "Response time std. deviation (ms)",
+}
 
 
 class App(tk.Tk):
@@ -36,7 +40,7 @@ class App(tk.Tk):
         self.results = {}
         self.disk = None
         self._anim_job = None
-        self.metric_keys = {label: key for key, label in experiment.METRICS}
+        self.metric_keys = {label: key for key, label in METRIC_LABELS.items()}
 
         self._build_controls()
         self._build_tabs()
@@ -63,11 +67,6 @@ class App(tk.Tk):
         self.full_var = tk.StringVar(value="15.0")
         self.xfer_var = tk.StringVar(value="0.05")
         self.rot_var = tk.StringVar(value="average")
-        self.nstep_var = tk.StringVar(value="4")
-        self.expire_var = tk.StringVar(value="100")
-        self.wl_kind_var = tk.StringVar(value="uniform")
-        self.wl_n_var = tk.StringVar(value="12")
-        self.wl_gap_var = tk.StringVar(value="8")
         self.status_var = tk.StringVar()
 
         req = ttk.LabelFrame(panel, text="Requests", padding=8)
@@ -96,31 +95,7 @@ class App(tk.Tk):
         ttk.Checkbutton(disk, text="Count C-SCAN / C-LOOK return jump",
                         variable=self.jump_var).pack(anchor="w", pady=(4, 0))
 
-        opts = ttk.LabelFrame(panel, text="Algorithm options", padding=8)
-        opts.pack(fill=tk.X, pady=6)
-        self._field(opts, "N-step SCAN batch size N:", self.nstep_var)
-        self._field(opts, "Deadline expiry (ms):", self.expire_var)
-
-        wl = ttk.LabelFrame(panel, text="Workloads", padding=8)
-        wl.pack(fill=tk.X, pady=6)
-        row = ttk.Frame(wl)
-        row.pack(fill=tk.X, pady=1)
-        ttk.Label(row, text="Pattern:", width=24, anchor="w").pack(side=tk.LEFT)
-        ttk.Combobox(row, textvariable=self.wl_kind_var, values=workloads.WORKLOAD_KINDS,
-                     state="readonly", width=10).pack(side=tk.LEFT)
-        self._field(wl, "Number of requests:", self.wl_n_var)
-        self._field(wl, "Mean gap between arrivals (ms):", self.wl_gap_var)
-        btns = ttk.Frame(wl)
-        btns.pack(fill=tk.X, pady=(4, 0))
-        ttk.Button(btns, text="Generate", command=self.generate_workload).pack(side=tk.LEFT, padx=(0, 4))
-        ttk.Button(btns, text="Starvation demo", command=self.starvation_demo).pack(side=tk.LEFT)
-        btns = ttk.Frame(wl)
-        btns.pack(fill=tk.X, pady=(4, 0))
-        ttk.Button(btns, text="Load CSV...", command=self.load_csv).pack(side=tk.LEFT, padx=(0, 4))
-        ttk.Button(btns, text="Save CSV...", command=self.save_csv).pack(side=tk.LEFT)
-
         ttk.Button(panel, text="Run simulation", command=self.run_simulation).pack(fill=tk.X, pady=(8, 2))
-        ttk.Button(panel, text="Reset to textbook example", command=self.reset_example).pack(fill=tk.X, pady=2)
         ttk.Label(panel, textvariable=self.status_var, foreground="#b03030",
                   wraplength=300, justify="left").pack(anchor="w", pady=(8, 0))
 
@@ -172,7 +147,7 @@ class App(tk.Tk):
         row = ttk.Frame(tab)
         row.pack(fill=tk.X, padx=6)
         ttk.Label(row, text="Chart metric:").pack(side=tk.LEFT)
-        self.metric_var = tk.StringVar(value=experiment.METRIC_LABELS["total_movement"])
+        self.metric_var = tk.StringVar(value=METRIC_LABELS["total_movement"])
         mbox = ttk.Combobox(row, textvariable=self.metric_var, values=list(self.metric_keys),
                             state="readonly", width=38)
         mbox.pack(side=tk.LEFT, padx=6)
@@ -181,46 +156,13 @@ class App(tk.Tk):
         self.cmp_canvas = FigureCanvasTkAgg(self.cmp_fig, master=tab)
         self.cmp_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-        # --- Experiment tab
-        tab = ttk.Frame(self.tabs)
-        self.tabs.add(tab, text="Random experiment")
-        self.exp_workload_var = tk.StringVar(value="uniform")
-        self.exp_trials_var = tk.StringVar(value="200")
-        self.exp_n_var = tk.StringVar(value="30")
-        self.exp_gap_var = tk.StringVar(value="8")
-        self.exp_metric_var = tk.StringVar(value=experiment.METRIC_LABELS["avg_response_ms"])
-        row = ttk.Frame(tab)
-        row.pack(fill=tk.X, padx=6, pady=6)
-        ttk.Label(row, text="Workload:").pack(side=tk.LEFT)
-        ttk.Combobox(row, textvariable=self.exp_workload_var, values=workloads.WORKLOAD_KINDS,
-                     state="readonly", width=10).pack(side=tk.LEFT, padx=(4, 10))
-        for text, var in (("Trials:", self.exp_trials_var), ("Requests/trial:", self.exp_n_var),
-                          ("Mean gap (ms):", self.exp_gap_var)):
-            ttk.Label(row, text=text).pack(side=tk.LEFT)
-            ttk.Entry(row, textvariable=var, width=6).pack(side=tk.LEFT, padx=(4, 10))
-        row2 = ttk.Frame(tab)
-        row2.pack(fill=tk.X, padx=6)
-        ttk.Label(row2, text="Metric:").pack(side=tk.LEFT)
-        ttk.Combobox(row2, textvariable=self.exp_metric_var, values=list(self.metric_keys),
-                     state="readonly", width=38).pack(side=tk.LEFT, padx=(4, 10))
-        ttk.Button(row2, text="Run experiment", command=self.run_experiment).pack(side=tk.LEFT)
-        self.exp_note_var = tk.StringVar(value="Uses the disk model and options from the left panel. "
-                                               "Each trial runs every algorithm on the same random workload.")
-        ttk.Label(tab, textvariable=self.exp_note_var, foreground="#444444",
-                  wraplength=900, justify="left").pack(fill=tk.X, padx=6, pady=4)
-        self.exp_fig = Figure(figsize=(8, 4.5), dpi=100)
-        self.exp_canvas = FigureCanvasTkAgg(self.exp_fig, master=tab)
-        self.exp_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-        self._exp_data = None
-
     # ------------------------------------------------------------------- input
     def _current_disk(self):
         return inputs.build_disk(self.cyl_var.get(), self.rpm_var.get(), self.t2t_var.get(),
                                  self.full_var.get(), self.xfer_var.get(), self.rot_var.get())
 
     def _policy_options(self) -> dict:
-        return {"n": inputs.parse_number(self.nstep_var.get(), "N (N-step SCAN)", int, 1),
-                "expire_ms": inputs.parse_number(self.expire_var.get(), "Deadline expiry", float, 0)}
+        return {"n": 4, "expire_ms": 100.0}
 
     def _parse_all(self):
         requests = inputs.parse_requests(self.requests_var.get())
@@ -245,82 +187,6 @@ class App(tk.Tk):
         self._fill_table()
         self._draw_comparison()
         self.show_selected()
-
-    def reset_example(self) -> None:
-        self.requests_var.set(DEFAULT_QUEUE)
-        self.head_var.set("53")
-        self.dir_var.set(UP)
-        self.jump_var.set(True)
-        self.cyl_var.set("200")
-        self.rpm_var.set("7200")
-        self.t2t_var.set("1.0")
-        self.full_var.set("15.0")
-        self.xfer_var.set("0.05")
-        self.rot_var.set("average")
-        self.nstep_var.set("4")
-        self.expire_var.set("100")
-        self.metric_var.set(experiment.METRIC_LABELS["total_movement"])
-        self.run_simulation()
-
-    def generate_workload(self) -> None:
-        try:
-            disk = self._current_disk()
-            n = inputs.parse_number(self.wl_n_var.get(), "Number of requests", int, 1)
-            gap = inputs.parse_number(self.wl_gap_var.get(), "Mean gap", float, 0)
-            requests = workloads.generate(self.wl_kind_var.get(), n, disk.cylinders, gap)
-        except ValueError as e:
-            self.status_var.set(str(e))
-            return
-        self.requests_var.set(inputs.format_requests(requests))
-        self.head_var.set(str(random.randrange(disk.cylinders)))
-        self.run_simulation()
-
-    def starvation_demo(self) -> None:
-        try:
-            disk = self._current_disk()
-            requests, head = workloads.starvation_demo(disk.cylinders)
-        except ValueError as e:
-            self.status_var.set(str(e))
-            return
-        self.requests_var.set(inputs.format_requests(requests))
-        self.head_var.set(str(head))
-        self.dir_var.set(UP)
-        self.metric_var.set(experiment.METRIC_LABELS["max_wait_ms"])
-        self.run_simulation()
-        self.algo_var.set("SSTF")
-        self.show_selected()
-        self.tabs.select(2)
-        self.status_var.set("Starvation demo: request #0 (cylinder %d) is stuck behind a stream of nearby "
-                            "requests under SSTF. Compare maximum wait across algorithms." % (disk.cylinders - 5))
-
-    def load_csv(self) -> None:
-        path = filedialog.askopenfilename(title="Open request trace",
-                                          filetypes=[("CSV files", "*.csv"), ("All files", "*.*")])
-        if not path:
-            return
-        try:
-            requests = workloads.load_csv(path)
-        except (OSError, ValueError) as e:
-            self.status_var.set(str(e))
-            return
-        self.requests_var.set(inputs.format_requests(requests))
-        self.run_simulation()
-
-    def save_csv(self) -> None:
-        try:
-            requests = inputs.parse_requests(self.requests_var.get())
-            if not requests:
-                raise ValueError("There are no requests to save.")
-        except ValueError as e:
-            self.status_var.set(str(e))
-            return
-        path = filedialog.asksaveasfilename(title="Save request trace", defaultextension=".csv",
-                                            filetypes=[("CSV files", "*.csv")])
-        if path:
-            try:
-                workloads.save_csv(requests, path)
-            except OSError as e:
-                self.status_var.set(str(e))
 
     def _fill_table(self) -> None:
         self.table.delete(*self.table.get_children())
@@ -378,35 +244,6 @@ class App(tk.Tk):
         if self._anim_job is not None:
             self.after_cancel(self._anim_job)
             self._anim_job = None
-
-    # -------------------------------------------------------------- experiment
-    def run_experiment(self) -> None:
-        try:
-            disk = self._current_disk()
-            trials = inputs.parse_number(self.exp_trials_var.get(), "Trials", int, 1)
-            n = inputs.parse_number(self.exp_n_var.get(), "Requests per trial", int, 1)
-            gap = inputs.parse_number(self.exp_gap_var.get(), "Mean gap", float, 0)
-            options = self._policy_options()
-        except ValueError as e:
-            messagebox.showerror("Experiment", str(e))
-            return
-        self.exp_note_var.set("Running %d trials..." % trials)
-        self.update_idletasks()
-        data = experiment.run_experiment(trials, n, disk, self.exp_workload_var.get(), gap,
-                                         count_jump=self.jump_var.get(), policy_options=options)
-        key = self.metric_keys[self.exp_metric_var.get()]
-        label = self.exp_metric_var.get()
-        summary = stats.summarize(data[key])
-        self.exp_fig.clf()
-        ax1, ax2 = self.exp_fig.subplots(1, 2)
-        plots.draw_bar_ci(ax1, summary, "Mean with 95% confidence interval", label)
-        plots.draw_boxplot(ax2, data[key], "Distribution across trials", label)
-        self.exp_fig.tight_layout()
-        self.exp_canvas.draw()
-        best = min(summary, key=lambda a: summary[a][0]) if key != "fairness" else max(summary, key=lambda a: summary[a][0])
-        self.exp_note_var.set(f"{trials} trials, {n} requests each, {self.exp_workload_var.get()} workload. "
-                              f"Best mean for '{label}': {best}.")
-
 
 if __name__ == "__main__":
     App().mainloop()

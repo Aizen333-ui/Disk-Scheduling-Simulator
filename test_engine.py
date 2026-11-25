@@ -8,7 +8,6 @@ import random
 import unittest
 
 import disk_scheduling as static
-import workloads
 from disk_model import DiskModel
 from engine import (DOWN, POLICY_NAMES, UP, Request, make_policy, requests_at_zero,
                     run_all, simulate)
@@ -152,42 +151,6 @@ class TestMetrics(unittest.TestCase):
                     "fairness", "throughput_per_s", "utilization"):
             self.assertIn(key, s)
         self.assertLessEqual(s["utilization"], 1.0 + 1e-9)
-
-
-class TestStarvation(unittest.TestCase):
-    def test_sstf_starves_the_far_request(self):
-        reqs, head = workloads.starvation_demo()
-        res = run_all(reqs, head, DISK, UP, names=["FCFS", "SSTF", "SCAN", "FSCAN"])
-        far_wait = {n: next(c.wait_ms for c in r.completions if c.request.id == 0) for n, r in res.items()}
-        self.assertGreater(far_wait["SSTF"], 200)
-        self.assertGreater(far_wait["SSTF"], 3 * far_wait["FCFS"])
-        self.assertLess(far_wait["FSCAN"], far_wait["SSTF"])
-        self.assertLess(far_wait["SCAN"], far_wait["SSTF"])
-
-
-class TestInvariants(unittest.TestCase):
-    def test_every_policy_on_random_workloads(self):
-        rng = random.Random(7)
-        for trial in range(25):
-            n = rng.randint(1, 25)
-            gap = rng.choice([0.0, 1.0, 5.0, 20.0])
-            reqs = workloads.generate(rng.choice(workloads.WORKLOAD_KINDS), n, 200, gap, seed=trial)
-            head = rng.randrange(200)
-            direction = rng.choice([UP, DOWN])
-            for count_jump in (True, False):
-                for name, r in run_all(reqs, head, DISK, direction, count_jump).items():
-                    ctx = (trial, name)
-                    self.assertEqual(sorted(c.request.id for c in r.completions), list(range(n)), ctx)
-                    self.assertEqual(len(r.head_path), len(r.seek_distances) + 1, ctx)
-                    last_finish = 0.0
-                    for c in r.completions:
-                        self.assertGreaterEqual(c.start_ms, c.request.arrival_ms - 1e-9, ctx)
-                        self.assertGreaterEqual(c.start_ms, last_finish - 1e-9, ctx)
-                        self.assertGreater(c.finish_ms, c.start_ms, ctx)
-                        last_finish = c.finish_ms
-                    expected = sum(abs(b - a) for i, (a, b) in enumerate(zip(r.head_path, r.head_path[1:]))
-                                   if count_jump or i not in r.jump_moves)
-                    self.assertEqual(r.total_movement, expected, ctx)
 
     def test_all_policy_names_are_supported(self):
         for name in POLICY_NAMES:
